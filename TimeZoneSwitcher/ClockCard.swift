@@ -29,7 +29,7 @@ struct ClockCard: View {
         VStack(alignment: .leading, spacing: 10) {
             // Header Row: City and UTC Offset
             HStack {
-                Text("\(model.flag) \(model.city.uppercased())")
+                Text("\(model.city.uppercased())")
                     .font(.system(size: 11, weight: .bold, design: .rounded))
                     .foregroundColor(.secondary)
                     .tracking(1.2)
@@ -128,10 +128,5 @@ struct ClockCard: View {
             x: 0,
             y: isActive ? 4 : 1
         )
-        .scaleEffect(isHovered ? 1.015 : 1.0)
-        .animation(.spring(response: 0.35, dampingFraction: 0.86), value: isHovered)
-        .onHover { hovering in
-            isHovered = hovering
-        }
     }
 }

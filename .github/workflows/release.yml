@@ -1,0 +1,109 @@
+name: Release TimeZone Switcher
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  release:
+    runs-on: macos-14
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Select Xcode Version
+        run: sudo xcode-select -s /Applications/Xcode_15.4.app
+
+      - name: Build Application
+        run: |
+          xcodebuild -project TimeZoneSwitcher.xcodeproj \
+                     -scheme TimeZoneSwitcher \
+                     -sdk macosx \
+                     -configuration Release \
+                     clean build \
+                     CODE_SIGNING_ALLOWED=NO
+
+      - name: Package App into DMG
+        run: |
+          # Locate built app
+          APP_PATH=$(find ~/Library/Developer/Xcode/DerivedData -name "TimeZoneSwitcher.app" -type d -path "*/Build/Products/Release/*" | head -n 1)
+          if [ -z "$APP_PATH" ]; then
+            echo "Error: Could not locate built app."
+            exit 1
+          fi
+          
+          # Create temporary folder for DMG creation
+          mkdir -p dmg_root
+          cp -R "$APP_PATH" dmg_root/
+          
+          # Install create-dmg utility
+          brew install create-dmg
+          
+          # Create DMG
+          create-dmg \
+            --volname "TimeZone Switcher Installation" \
+            --volicon "dmg_root/TimeZoneSwitcher.app/Contents/Resources/AppIcon.icns" \
+            --window-pos 200 120 \
+            --window-size 600 400 \
+            --icon-size 100 \
+            --icon "TimeZoneSwitcher.app" 175 190 \
+            --hide-extension "TimeZoneSwitcher.app" \
+            --app-drop-link 425 190 \
+            "TimeZoneSwitcher.dmg" \
+            "dmg_root/"
+            
+          # Calculate SHA256
+          shasum -a 256 TimeZoneSwitcher.dmg > shasum.txt
+          echo "SHA256=$(cat shasum.txt | awk '{print $1}')" >> $GITHUB_ENV
+
+      - name: Create GitHub Release
+        id: create_release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            TimeZoneSwitcher.dmg
+            shasum.txt
+          body: |
+            ## TimeZone Switcher ${{ github.ref_name }}
+            
+            ### SHA-256 Checksum
+            ```
+            ${{ env.SHA256 }}
+            ```
+            
+            Install via Homebrew:
+            ```bash
+            brew install --cask myusername/tap/timezone-switcher
+            ```
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Step to automatically update the Cask in homebrew-tap repository
+      # This requires a Custom Personal Access Token (PAT) named HOMEBREW_TAP_TOKEN with repo access.
+      - name: Update Homebrew Cask
+        if: env.HOMEBREW_TAP_TOKEN != ''
+        run: |
+          # Clone the tap repository
+          git clone https://${{ secrets.HOMEBREW_TAP_TOKEN }}@github.com/${{ github.repository_owner }}/homebrew-tap.git
+          cd homebrew-tap
+          
+          CASK_FILE="Casks/timezone-switcher.rb"
+          VERSION="${{ github.ref_name }}"
+          # Clean version string (remove 'v' prefix if present)
+          VERSION_CLEAN="${VERSION#v}"
+          URL="https://github.com/${{ github.repository }}/releases/download/${VERSION}/TimeZoneSwitcher.dmg"
+          SHA256="${{ env.SHA256 }}"
+          
+          # Update the version and sha256 in the cask file
+          sed -i '' "s/version \".*\"/version \"${VERSION_CLEAN}\"/g" $CASK_FILE
+          sed -i '' "s/sha256 \".*\"/sha256 \"${SHA256}\"/g" $CASK_FILE
+          
+          # Commit and push changes
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add $CASK_FILE
+          git commit -m "Update timezone-switcher to ${VERSION_CLEAN}"
+          git push
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}

@@ -10,37 +10,40 @@ public struct TimeZoneModel: Identifiable, Hashable {
     public let city: String
     public let country: String
     public let flag: String
+    public let region: String
     public let gmtOffset: String
     public let rawOffset: Int
+    public let searchTerms: String
     
     public init(identifier: String) {
         self.id = identifier
-        let components = identifier.split(separator: "/")
-        self.city = components.last?.replacingOccurrences(of: "_", with: " ") ?? identifier
-        self.country = components.first.map(String.init) ?? "Unknown"
+        let friendly = FriendlyTimeZoneMapper.shared.getLocation(for: identifier)
+        self.city = friendly.city
+        self.country = friendly.country
+        self.flag = friendly.flag
+        self.region = friendly.region
         
         let tz = TimeZone(identifier: identifier) ?? TimeZone.current
         let seconds = tz.secondsFromGMT()
         self.rawOffset = seconds
         let hours = seconds / 3600
         let minutes = abs(seconds / 60) % 60
-        self.gmtOffset = String(format: "GMT%+d:%02d", hours, minutes)
+        let offsetStr = String(format: "UTC%+d:%02d", hours, minutes)
+        self.gmtOffset = offsetStr
         
-        // Simple flag mapping based on continent
-        switch self.country {
-        case "America", "US": self.flag = "🇺🇸"
-        case "Europe": self.flag = "🇪🇺"
-        case "Asia":
-            if self.city == "Calcutta" || self.city == "Kolkata" { self.flag = "🇮🇳" }
-            else if self.city == "Tokyo" { self.flag = "🇯🇵" }
-            else if self.city == "Seoul" { self.flag = "🇰🇷" }
-            else if self.city == "Dubai" { self.flag = "🇦🇪" }
-            else { self.flag = "🌏" }
-        case "Australia": self.flag = "🇦🇺"
-        case "Africa": self.flag = "🌍"
-        case "Pacific": self.flag = "🏝️"
-        default: self.flag = "🌐"
-        }
+        var terms = [friendly.country, friendly.city, identifier, offsetStr, offsetStr.replacingOccurrences(of: "UTC", with: "GMT")]
+        terms.append(contentsOf: friendly.aliases)
+        self.searchTerms = terms.joined(separator: " ").lowercased()
+    }
+    
+    public func matchScore(for query: String) -> Int {
+        let exactTerms = searchTerms.split(separator: " ").map { String($0) }
+        if exactTerms.contains(query) { return 100 }
+        if city.lowercased() == query { return 90 }
+        if city.lowercased().hasPrefix(query) { return 80 }
+        if country.lowercased() == query { return 70 }
+        if country.lowercased().hasPrefix(query) { return 60 }
+        return 0
     }
 }
 
@@ -90,26 +93,51 @@ public final class TimeZoneManager {
     public var allTimeZones: [TimeZoneModel] = []
     public var searchQuery: String = ""
     
+    public var popularTimeZones: [TimeZoneModel] {
+        FriendlyTimeZoneMapper.shared.popularIdentifiers.compactMap { id in
+            allTimeZones.first(where: { $0.id == id })
+        }
+    }
+    
+    public var regions: [String] {
+        ["Africa", "America", "Asia", "Europe", "Australia", "Pacific", "Indian", "Atlantic", "Antarctica", "Standard Time"]
+    }
+    
+    public func timeZones(for region: String) -> [TimeZoneModel] {
+        allTimeZones.filter { $0.region == region }
+    }
+    
     public var filteredTimeZones: [TimeZoneModel] {
         if searchQuery.isEmpty {
             return allTimeZones
         }
-        let q = searchQuery.lowercased()
-        return allTimeZones.filter { tz in
+        let q = searchQuery.lowercased().trimmingCharacters(in: .whitespaces)
+        
+        let filtered = allTimeZones.filter { tz in
             tz.city.lowercased().contains(q) ||
             tz.country.lowercased().contains(q) ||
-            tz.id.lowercased().contains(q)
+            tz.id.lowercased().contains(q) ||
+            tz.searchTerms.contains(q)
+        }
+        
+        return filtered.sorted { tz1, tz2 in
+            let score1 = tz1.matchScore(for: q)
+            let score2 = tz2.matchScore(for: q)
+            if score1 != score2 { return score1 > score2 }
+            return tz1.city < tz2.city
         }
     }
     
-    public var favoriteTimeZones: [String] {
-        get { UserDefaults.standard.stringArray(forKey: "favoriteTimeZones") ?? ["Asia/Calcutta", "America/Los_Angeles"] }
-        set { UserDefaults.standard.set(newValue, forKey: "favoriteTimeZones") }
+    public var favoriteTimeZones: [String] = UserDefaults.standard.stringArray(forKey: "favoriteTimeZones") ?? ["Asia/Calcutta", "America/Los_Angeles"] {
+        didSet {
+            UserDefaults.standard.set(favoriteTimeZones, forKey: "favoriteTimeZones")
+        }
     }
     
-    public var recentTimeZones: [String] {
-        get { UserDefaults.standard.stringArray(forKey: "recentTimeZones") ?? [] }
-        set { UserDefaults.standard.set(newValue, forKey: "recentTimeZones") }
+    public var recentTimeZones: [String] = UserDefaults.standard.stringArray(forKey: "recentTimeZones") ?? [] {
+        didSet {
+            UserDefaults.standard.set(recentTimeZones, forKey: "recentTimeZones")
+        }
     }
     
     public func toggleFavorite(_ id: String) {
@@ -118,6 +146,26 @@ public final class TimeZoneManager {
             favs.remove(at: idx)
         } else {
             favs.append(id)
+        }
+        favoriteTimeZones = favs
+    }
+    
+    public enum MoveDirection {
+        case left, right
+    }
+    
+    public func moveFavorite(_ id: String, direction: MoveDirection) {
+        var favs = favoriteTimeZones
+        guard let index = favs.firstIndex(of: id) else { return }
+        switch direction {
+        case .left:
+            if index > 0 {
+                favs.swapAt(index, index - 1)
+            }
+        case .right:
+            if index < favs.count - 1 {
+                favs.swapAt(index, index + 1)
+            }
         }
         favoriteTimeZones = favs
     }
@@ -298,5 +346,99 @@ public class KeychainHelper {
             kSecAttrAccount as String: account
         ]
         SecItemDelete(query as CFDictionary)
+    }
+}
+import Foundation
+
+public struct FriendlyLocation {
+    public let country: String
+    public let city: String
+    public let flag: String
+    public let region: String
+    public let aliases: [String]
+}
+
+public class FriendlyTimeZoneMapper {
+    public static let shared = FriendlyTimeZoneMapper()
+    
+    // Explicit mappings for the requested popular timezones
+    public let popularMappings: [String: FriendlyLocation] = [
+        "America/Los_Angeles": FriendlyLocation(country: "United States", city: "Los Angeles", flag: "🇺🇸", region: "America", aliases: ["USA", "California", "PST", "PDT", "Pacific Time"]),
+        "America/New_York": FriendlyLocation(country: "United States", city: "New York", flag: "🇺🇸", region: "America", aliases: ["USA", "EST", "EDT", "Eastern Time"]),
+        "America/Chicago": FriendlyLocation(country: "United States", city: "Chicago", flag: "🇺🇸", region: "America", aliases: ["USA", "CST", "CDT", "Central Time"]),
+        "America/Phoenix": FriendlyLocation(country: "United States", city: "Phoenix", flag: "🇺🇸", region: "America", aliases: ["USA", "MST", "Mountain Time"]),
+        "America/Toronto": FriendlyLocation(country: "Canada", city: "Toronto", flag: "🇨🇦", region: "America", aliases: ["EST", "EDT", "Eastern Time"]),
+        "Europe/London": FriendlyLocation(country: "United Kingdom", city: "London", flag: "🇬🇧", region: "Europe", aliases: ["UK", "Britain", "England", "GMT", "BST"]),
+        "Europe/Paris": FriendlyLocation(country: "France", city: "Paris", flag: "🇫🇷", region: "Europe", aliases: ["CET", "CEST"]),
+        "Europe/Berlin": FriendlyLocation(country: "Germany", city: "Berlin", flag: "🇩🇪", region: "Europe", aliases: ["CET", "CEST"]),
+        "Europe/Rome": FriendlyLocation(country: "Italy", city: "Rome", flag: "🇮🇹", region: "Europe", aliases: ["CET", "CEST"]),
+        "Europe/Madrid": FriendlyLocation(country: "Spain", city: "Madrid", flag: "🇪🇸", region: "Europe", aliases: ["CET", "CEST"]),
+        "Asia/Dubai": FriendlyLocation(country: "United Arab Emirates", city: "Dubai", flag: "🇦🇪", region: "Asia", aliases: ["UAE", "Gulf Standard Time"]),
+        "Asia/Singapore": FriendlyLocation(country: "Singapore", city: "Singapore", flag: "🇸🇬", region: "Asia", aliases: ["SGT"]),
+        "Asia/Tokyo": FriendlyLocation(country: "Japan", city: "Tokyo", flag: "🇯🇵", region: "Asia", aliases: ["JST", "JP"]),
+        "Asia/Seoul": FriendlyLocation(country: "South Korea", city: "Seoul", flag: "🇰🇷", region: "Asia", aliases: ["KST", "Korea", "KR"]),
+        "Australia/Sydney": FriendlyLocation(country: "Australia", city: "Sydney", flag: "🇦🇺", region: "Australia", aliases: ["AEST", "AEDT", "AU"]),
+        "Asia/Calcutta": FriendlyLocation(country: "India", city: "New Delhi", flag: "🇮🇳", region: "Asia", aliases: ["IST", "Mumbai", "Kolkata", "IN", "Bharat"]),
+        "Asia/Kolkata": FriendlyLocation(country: "India", city: "New Delhi", flag: "🇮🇳", region: "Asia", aliases: ["IST", "Mumbai", "Calcutta", "IN", "Bharat"]),
+        "Asia/Hong_Kong": FriendlyLocation(country: "Hong Kong", city: "Hong Kong", flag: "🇭🇰", region: "Asia", aliases: ["HKT"]),
+        "Asia/Shanghai": FriendlyLocation(country: "China", city: "Shanghai", flag: "🇨🇳", region: "Asia", aliases: ["CST", "Beijing", "CN"])
+    ]
+    
+    public let popularIdentifiers: [String] = [
+        "America/New_York", "America/Los_Angeles", "America/Chicago", "America/Phoenix", "America/Toronto",
+        "Europe/London", "Europe/Paris", "Europe/Berlin", "Europe/Rome", "Europe/Madrid",
+        "Asia/Dubai", "Asia/Singapore", "Asia/Tokyo", "Asia/Seoul", "Australia/Sydney",
+        "Asia/Calcutta", "Asia/Hong_Kong", "Asia/Shanghai"
+    ]
+    
+    // Country flag mapping for procedural generation
+    let countryToFlag: [String: String] = [
+        "United States": "🇺🇸", "Canada": "🇨🇦", "United Kingdom": "🇬🇧", "France": "🇫🇷",
+        "Germany": "🇩🇪", "Italy": "🇮🇹", "Spain": "🇪🇸", "Japan": "🇯🇵", "China": "🇨🇳",
+        "India": "🇮🇳", "Australia": "🇦🇺", "Brazil": "🇧🇷", "Mexico": "🇲🇽", "Russia": "🇷🇺",
+        "South Korea": "🇰🇷", "Singapore": "🇸🇬", "United Arab Emirates": "🇦🇪"
+    ]
+    
+    public func getLocation(for identifier: String) -> FriendlyLocation {
+        if let explicit = popularMappings[identifier] {
+            return explicit
+        }
+        
+        let components = identifier.split(separator: "/")
+        let regionRaw = components.first.map(String.init) ?? "Unknown"
+        let cityRaw = components.last?.replacingOccurrences(of: "_", with: " ") ?? identifier
+        
+        let country = resolveCountry(region: regionRaw, city: cityRaw)
+        let flag = countryToFlag[country] ?? getContinentFlag(region: regionRaw)
+        
+        return FriendlyLocation(
+            country: country,
+            city: cityRaw,
+            flag: flag,
+            region: regionRaw,
+            aliases: []
+        )
+    }
+    
+    private func getContinentFlag(region: String) -> String {
+        switch region {
+        case "America", "US": return "🌎"
+        case "Europe": return "🇪🇺"
+        case "Asia": return "🌏"
+        case "Australia": return "🇦🇺"
+        case "Africa": return "🌍"
+        case "Pacific": return "🏝️"
+        case "Indian": return "🌊"
+        case "Atlantic": return "🌊"
+        case "Antarctica": return "🐧"
+        case "GMT", "Etc": return "⏱️"
+        default: return "🌐"
+        }
+    }
+    
+    private func resolveCountry(region: String, city: String) -> String {
+        if region == "America" { return "Americas" }
+        if region == "Etc" || region == "GMT" { return "Standard Time" }
+        return region
     }
 }
