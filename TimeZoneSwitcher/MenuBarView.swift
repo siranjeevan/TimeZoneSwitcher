@@ -5,6 +5,7 @@ enum NavigationDestination: Hashable {
     case browseRegionsList
     case search
     case detail(String) // TimeZone ID
+    case settings
 }
 
 struct MenuBarView: View {
@@ -40,13 +41,13 @@ struct MenuBarView: View {
                         clockManager: clockManager,
                         navPath: $navPath
                     )
-                    .background(VisualEffectView(material: .hudWindow, blendingMode: .behindWindow).ignoresSafeArea())
+                    .background(VisualEffectView(material: .popover, blendingMode: .behindWindow, colorScheme: settings.theme.colorScheme).ignoresSafeArea())
                 case .browseRegionsList:
                     BrowseRegionsListView(
                         manager: timeManager,
                         navPath: $navPath
                     )
-                    .background(VisualEffectView(material: .hudWindow, blendingMode: .behindWindow).ignoresSafeArea())
+                    .background(VisualEffectView(material: .popover, blendingMode: .behindWindow, colorScheme: settings.theme.colorScheme).ignoresSafeArea())
                 case .search:
                     SearchListView(
                         manager: timeManager,
@@ -55,7 +56,7 @@ struct MenuBarView: View {
                         query: $localSearchQuery,
                         isSearchFocused: _isSearchFocused
                     )
-                    .background(VisualEffectView(material: .hudWindow, blendingMode: .behindWindow).ignoresSafeArea())
+                    .background(VisualEffectView(material: .popover, blendingMode: .behindWindow, colorScheme: settings.theme.colorScheme).ignoresSafeArea())
                 case .detail(let id):
                     if let model = timeManager.allTimeZones.first(where: { $0.id == id }) {
                         DetailView(
@@ -64,14 +65,20 @@ struct MenuBarView: View {
                             clockManager: clockManager,
                             navPath: $navPath
                         )
-                        .background(VisualEffectView(material: .hudWindow, blendingMode: .behindWindow).ignoresSafeArea())
+                        .background(VisualEffectView(material: .popover, blendingMode: .behindWindow, colorScheme: settings.theme.colorScheme).ignoresSafeArea())
                     }
+                case .settings:
+                    SettingsView(
+                        settings: settings,
+                        navPath: $navPath
+                    )
+                    .background(VisualEffectView(material: .popover, blendingMode: .behindWindow, colorScheme: settings.theme.colorScheme).ignoresSafeArea())
                 }
             }
         }
         .frame(width: 500, height: 530)
         .background(
-            VisualEffectView(material: .hudWindow, blendingMode: .behindWindow)
+            VisualEffectView(material: .popover, blendingMode: .behindWindow, colorScheme: settings.theme.colorScheme)
                 .ignoresSafeArea()
         )
         .preferredColorScheme(settings.theme.colorScheme)
@@ -112,6 +119,9 @@ struct MenuBarView: View {
                 dismissWorkItem = work
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: work)
             }
+        }
+        .onChange(of: settings.theme) { _, _ in
+            NotificationCenter.default.post(name: Notification.Name("ThemeChanged"), object: nil)
         }
     }
 }
@@ -218,7 +228,7 @@ struct HomeView: View {
             }
             
             Divider().background(Color.primary.opacity(0.1))
-            FooterView(settings: settings, manager: manager)
+            FooterView(settings: settings, manager: manager, navPath: $navPath)
         }
     }
 }
@@ -673,10 +683,11 @@ struct StatRow: View {
 struct FooterView: View {
     @Bindable var settings: SettingsManager
     let manager: TimeZoneManager
+    @Binding var navPath: NavigationPath
     
     var body: some View {
         HStack {
-            Button(action: { /* TODO: Open settings */ }) {
+            Button(action: { navPath.append(NavigationDestination.settings) }) {
                 Image(systemName: "gearshape.fill")
                     .font(.system(size: 12, weight: .medium))
                     .foregroundColor(.secondary)
@@ -708,6 +719,7 @@ struct FooterView: View {
 struct VisualEffectView: NSViewRepresentable {
     let material: NSVisualEffectView.Material
     let blendingMode: NSVisualEffectView.BlendingMode
+    let colorScheme: ColorScheme?
     
     func makeNSView(context: Context) -> NSVisualEffectView {
         let visualEffectView = NSVisualEffectView()
@@ -720,6 +732,13 @@ struct VisualEffectView: NSViewRepresentable {
     func updateNSView(_ nsView: NSVisualEffectView, context: Context) {
         nsView.material = material
         nsView.blendingMode = blendingMode
+        
+        // Force-apply visual appearance names to trigger instant AppKit redraws
+        if let colorScheme = colorScheme {
+            nsView.appearance = NSAppearance(named: colorScheme == .dark ? .darkAqua : .aqua)
+        } else {
+            nsView.appearance = nil
+        }
     }
 }
 
@@ -782,7 +801,7 @@ struct SetupView: View {
         }
         .padding(30)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(VisualEffectView(material: .popover, blendingMode: .withinWindow).ignoresSafeArea())
+        .background(VisualEffectView(material: .popover, blendingMode: .withinWindow, colorScheme: nil).ignoresSafeArea())
         .onAppear { isFocused = true }
     }
     
@@ -790,5 +809,92 @@ struct SetupView: View {
         guard !password.isEmpty else { return }
         _ = KeychainHelper.shared.savePassword(password)
         manager.showSetupPrompt = false
+    }
+}
+
+// MARK: - Settings View
+struct SettingsView: View {
+    @Bindable var settings: SettingsManager
+    @Binding var navPath: NavigationPath
+    
+    var body: some View {
+        VStack(spacing: 0) {
+            // Header
+            HStack {
+                Button(action: { navPath.removeLast() }) {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 15, weight: .bold))
+                        .foregroundColor(.accentColor)
+                        .padding(10)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                
+                Spacer()
+                Text("Settings")
+                    .font(.system(size: 16, weight: .bold, design: .rounded))
+                Spacer()
+                Image(systemName: "chevron.left").opacity(0)
+            }
+            .padding()
+            
+            Divider().background(Color.primary.opacity(0.1))
+            
+            ScrollView {
+                VStack(alignment: .leading, spacing: 24) {
+                    // Theme Section
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Appearance")
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundColor(.secondary)
+                        
+                        Picker("Theme", selection: $settings.theme) {
+                            ForEach(AppTheme.allCases) { theme in
+                                Text(theme.rawValue).tag(theme)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+                    }
+                    .padding(.horizontal)
+                    .padding(.top, 16)
+                    
+                    // Format Section
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Menu Bar Display Format")
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundColor(.secondary)
+                        
+                        ForEach(MenuBarFormat.allCases) { format in
+                            HStack {
+                                Text(format.rawValue)
+                                    .font(.system(size: 13, weight: .medium, design: .rounded))
+                                Spacer()
+                                if settings.menuBarFormat == format {
+                                    Image(systemName: "checkmark")
+                                        .foregroundColor(.accentColor)
+                                        .font(.system(size: 12, weight: .bold))
+                                }
+                            }
+                            .padding(.vertical, 8)
+                            .padding(.horizontal, 12)
+                            .background(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .fill(settings.menuBarFormat == format ? Color.accentColor.opacity(0.08) : Color.primary.opacity(0.02))
+                            )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .stroke(settings.menuBarFormat == format ? Color.accentColor.opacity(0.3) : Color.clear, lineWidth: 1)
+                            )
+                            .onTapGesture {
+                                settings.menuBarFormat = format
+                                NotificationCenter.default.post(name: Notification.Name("UpdateTime"), object: nil)
+                            }
+                        }
+                    }
+                    .padding(.horizontal)
+                }
+            }
+        }
     }
 }

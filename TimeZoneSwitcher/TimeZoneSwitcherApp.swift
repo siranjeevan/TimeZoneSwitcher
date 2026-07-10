@@ -50,6 +50,17 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             name: Notification.Name("ClosePopover"),
             object: nil
         )
+        
+        // Apply initial theme
+        updatePopoverAppearance()
+        
+        // Listen to theme changes
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(updatePopoverAppearance),
+            name: Notification.Name("ThemeChanged"),
+            object: nil
+        )
     }
     
     @objc private func closePopover() {
@@ -174,10 +185,33 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             } else {
                 NSApp.activate(ignoringOtherApps: true)
                 // Small delay lets window focus settle so the popover positions correctly under the menu bar
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+                    guard let self = self else { return }
                     popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
                     popover.contentViewController?.view.window?.makeKey()
+                    self.updatePopoverAppearance()
                 }
+            }
+        }
+    }
+    
+    @objc func updatePopoverAppearance() {
+        guard let popover = popover else { return }
+        let theme = SettingsManager.shared.theme
+        DispatchQueue.main.async {
+            let appearance: NSAppearance?
+            switch theme {
+            case .system:
+                appearance = nil
+            case .light:
+                appearance = NSAppearance(named: .aqua)
+            case .dark:
+                appearance = NSAppearance(named: .darkAqua)
+            }
+            
+            popover.appearance = appearance
+            if let window = popover.contentViewController?.view.window {
+                window.appearance = appearance
             }
         }
     }
