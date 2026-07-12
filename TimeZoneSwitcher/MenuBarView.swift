@@ -859,6 +859,18 @@ struct SettingsView: View {
                     .padding(.horizontal)
                     .padding(.top, 16)
                     
+                    // Launch at Login Section
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("General")
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundColor(.secondary)
+                        
+                        Toggle("Launch at Login", isOn: $settings.launchAtLogin)
+                            .toggleStyle(.checkbox)
+                            .font(.system(size: 13, weight: .medium, design: .rounded))
+                    }
+                    .padding(.horizontal)
+                    
                     // Format Section
                     VStack(alignment: .leading, spacing: 10) {
                         Text("Menu Bar Display Format")

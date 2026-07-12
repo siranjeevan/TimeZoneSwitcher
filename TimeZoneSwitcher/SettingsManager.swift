@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import ServiceManagement
 
 @Observable
 public final class SettingsManager {
@@ -29,10 +30,20 @@ public final class SettingsManager {
     
     public var launchAtLogin: Bool {
         get {
-            UserDefaults.standard.bool(forKey: "launchAtLogin")
+            // Synchronize with SMAppService state to ensure accuracy
+            return SMAppService.mainApp.status == .enabled
         }
         set {
-            UserDefaults.standard.set(newValue, forKey: "launchAtLogin")
+            do {
+                if newValue {
+                    try SMAppService.mainApp.register()
+                } else {
+                    try SMAppService.mainApp.unregister()
+                }
+                UserDefaults.standard.set(newValue, forKey: "launchAtLogin")
+            } catch {
+                print("Failed to toggle Launch at Login SMAppService: \(error)")
+            }
         }
     }
     
